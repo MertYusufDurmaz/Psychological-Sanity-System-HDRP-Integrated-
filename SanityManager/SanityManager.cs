@@ -1,19 +1,20 @@
 using UnityEngine;
 using UnityEngine.UI;
 using UnityEngine.Rendering;
+using UnityEngine.Events;
 
 public class SanityManager : MonoBehaviour
 {
-    public static SanityManager Instance;
+    public static SanityManager Instance { get; private set; }
 
     [Header("Settings")]
     public float maxSanity = 100f;
-    [SerializeField] public float currentSanity;
+    [SerializeField] private float currentSanity;
     public bool isPlayerHidden = false;
 
-    private bool isDead = false; // Oyunun sürekli Game Over çağırmaması için kontrol
+    private bool isDead = false;
 
-    [Header("Warning Settings (Uyarı Ayarları)")]
+    [Header("Warning Settings")]
     public float lowSanityThreshold = 25f;
     private bool hasShownLowSanityWarning = false;
 
@@ -27,11 +28,19 @@ public class SanityManager : MonoBehaviour
     public float chaseDecay = 10.0f;
     public float enemyNearDecay = 5.0f;
 
-    [Header("References")]
+    [Header("Dependencies")]
     public Image sanityBarFill;
     public Volume insanityVolume;
-    public EnemyAI enemyReference;
+    [Tooltip("Sahnede akÄ±l saÄŸlÄ±ÄŸÄ±nÄ± etkileyecek tÃ¼m dÃ¼ÅŸmanlarÄ± buraya ekleyin.")]
+    public EnemyAI[] enemies;
     public FlashlightController flashlight;
+
+    [Header("Events (Manager EntegrasyonlarÄ±)")]
+    [Tooltip("AkÄ±l saÄŸlÄ±ÄŸÄ± 0 olduÄŸunda tetiklenir (Ã–rn: GameOverManager.ShowGameOverScreen)")]
+    public UnityEvent onSanityDepleted;
+    
+    [Tooltip("AkÄ±l saÄŸlÄ±ÄŸÄ± kritik seviyeye dÃ¼ÅŸtÃ¼ÄŸÃ¼nde tetiklenir (Ã–rn: NotificationManager.ShowNotification)")]
+    public UnityEvent<string> onLowSanityWarning;
 
     private void Awake()
     {
@@ -39,12 +48,11 @@ public class SanityManager : MonoBehaviour
         else Destroy(gameObject);
 
         currentSanity = maxSanity;
-        isDead = false; // Başlangıçta yaşıyoruz
+        isDead = false;
     }
 
     private void Update()
     {
-        // Eğer öldüysek akıl sağlığı düşmeye veya kontrol edilmeye devam etmesin
         if (isDead) return;
 
         HandleSanityDrain();
@@ -59,21 +67,34 @@ public class SanityManager : MonoBehaviour
 
         float totalDrain = passiveDecay;
 
+        // Fener kapalÄ±ysa ekstra dÃ¼ÅŸÃ¼ÅŸ
         if (flashlight != null && !flashlight.isLightOn)
-            totalDrain += darknessDecay;
-
-        if (enemyReference != null)
         {
-            if (enemyReference.CurrentState == EnemyAI.EnemyState.Chase)
-                totalDrain += chaseDecay;
-            else if (enemyReference.CurrentState == EnemyAI.EnemyState.Search)
-                totalDrain += enemyNearDecay;
+            totalDrain += darknessDecay;
+        }
+
+        // TÃ¼m dÃ¼ÅŸmanlarÄ± kontrol et (Ã‡oklu dÃ¼ÅŸman desteÄŸi)
+        if (enemies != null && enemies.Length > 0)
+        {
+            bool isChased = false;
+            bool isSearched = false;
+
+            foreach (var enemy in enemies)
+            {
+                if (enemy == null) continue;
+
+                if (enemy.CurrentState == EnemyAI.EnemyState.Chase) isChased = true;
+                else if (enemy.CurrentState == EnemyAI.EnemyState.Search) isSearched = true;
+            }
+
+            // En yÃ¼ksek tehlikeye gÃ¶re dÃ¼ÅŸÃ¼ÅŸ uygula
+            if (isChased) totalDrain += chaseDecay;
+            else if (isSearched) totalDrain += enemyNearDecay;
         }
 
         currentSanity -= totalDrain * Time.deltaTime;
         currentSanity = Mathf.Clamp(currentSanity, 0f, maxSanity);
 
-        // --- YENİ EKLENEN KISIM: ÖLÜM KONTROLÜ ---
         if (currentSanity <= 0 && !isDead)
         {
             TriggerInsanityDeath();
@@ -83,33 +104,21 @@ public class SanityManager : MonoBehaviour
     private void TriggerInsanityDeath()
     {
         isDead = true;
-        Debug.Log("Akıl sağlığı tükendi! Oyun Bitti.");
+        Debug.Log("AkÄ±l saÄŸlÄ±ÄŸÄ± tÃ¼kendi! Oyun Bitti.");
 
-        if (NotificationManager.Instance != null)
-        {
-            // İstersen bildirimi kapatabilirsin, zaten koca ekran çıkacak
-            // NotificationManager.Instance.ShowNotification(NotificationType.Warning, "AKLINI YİTİRDİN...");
-        }
-
-        // --- GÜNCELLEME BURADA ---
-        // Artık parantez içine istediğimiz mesajı yazıyoruz.
-        if (GameOverManager.Instance != null)
-        {
-            GameOverManager.Instance.ShowGameOverScreen("AKIL SAĞLIĞINI KAYBETTİN...");
-        }
+        // Hardcoded GameOverManager yerine Event tetikliyoruz
+        onSanityDepleted?.Invoke();
     }
 
     private void CheckLowSanityWarning()
     {
         if (currentSanity <= lowSanityThreshold && !hasShownLowSanityWarning)
         {
-            if (NotificationManager.Instance != null)
-            {
-                NotificationManager.Instance.ShowNotification(NotificationType.Warning, "AKIL SAĞLIĞIN ÇOK DÜŞTÜ! HEMEN SAKLAN!");
-                hasShownLowSanityWarning = true;
-            }
+            // Hardcoded NotificationManager yerine Event tetikliyoruz
+            onLowSanityWarning?.Invoke("AKIL SAÄLIÄIN Ã‡OK DÃœÅTÃœ! HEMEN SAKLAN!");
+            hasShownLowSanityWarning = true;
         }
-        else if (currentSanity > lowSanityThreshold + 5f)
+        else if (currentSanity > lowSanityThreshold + 5f) // Flapping (SÃ¼rekli uyarÄ±) Ã¶nleme
         {
             hasShownLowSanityWarning = false;
         }
@@ -117,7 +126,7 @@ public class SanityManager : MonoBehaviour
 
     public void IncreaseSanity(float amount)
     {
-        if (isDead) return; // Ölüye can basamazsın :)
+        if (isDead) return;
 
         currentSanity += amount;
         if (currentSanity > maxSanity) currentSanity = maxSanity;
